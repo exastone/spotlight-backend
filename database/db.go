@@ -2,6 +2,8 @@ package database
 
 import (
 	"database/sql"
+	"log"
+
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -10,7 +12,7 @@ var DB *sql.DB
 // Initialize database connection
 func InitializeDB() (*sql.DB, error) {
 	var err error
-	DB, err = sql.Open("sqlite3", "./storage/test.db")
+	DB, err = sql.Open("sqlite3", "./storage/dev.sqlite")
 	if err != nil {
 		panic(err)
 	}
@@ -24,12 +26,46 @@ func InitializeDB() (*sql.DB, error) {
 	if err != nil {
 		panic(err)
 	}
-	return DB, err
+
+	exists, err := tableExists(DB, "users")
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if the "users" table exists, and if not, create it
+	if exists {
+		log.Println("Table 'users' exists")
+	} else {
+		log.Println("Table 'users' does not exist, creating...")
+		err = createUserTable(DB)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return DB, nil
 }
 
-func createTokenTable(db *sql.DB) error {
+func tableExists(db *sql.DB, tableName string) (bool, error) {
+	query :=
+		"SELECT name FROM sqlite_master WHERE type='table' AND name=?;"
+
+	row := db.QueryRow(query, tableName)
+
+	var name string
+	err := row.Scan(&name)
+	if err == sql.ErrNoRows {
+		return false, nil // Table doesn't exist
+	} else if err != nil {
+		return false, err // An error occurred
+	}
+
+	return true, nil // Table exists
+}
+
+func createUserTable(db *sql.DB) error {
 	query := `
-	CREATE TABLE IF NOT EXISTS spotify_tokens (
+	CREATE TABLE IF NOT EXISTS users (
 		user_id INTEGER PRIMARY KEY,
 		access_token TEXT,
 		expires INTEGER,
@@ -43,7 +79,7 @@ func createTokenTable(db *sql.DB) error {
 
 func AddSpotifyToken(db *sql.DB, user_id int, accessToken string, expires int64, scope string, refreshToken string) error {
 	query := `
-	INSERT INTO spotify_tokens (user_id, access_token, expires, scope, refresh_token)
+	INSERT INTO users (user_id, access_token, expires, scope, refresh_token)
 	VALUES (?, ?, ?, ?, ?);`
 
 	_, err := db.Exec(query, user_id, accessToken, expires, scope, refreshToken)
@@ -62,7 +98,7 @@ func GetSpotifyToken(db *sql.DB, user_id int) (SpotifyToken, error) {
 	var token SpotifyToken
 
 	query := `SELECT user_id, access_token, expires, scope, refresh_token
-	          FROM spotify_tokens
+	          FROM users
 	          WHERE user_id = ?`
 
 	row := db.QueryRow(query, user_id)
@@ -76,7 +112,7 @@ func GetSpotifyToken(db *sql.DB, user_id int) (SpotifyToken, error) {
 // May want to add scope update as well
 func UpdateSpotifyToken(db *sql.DB, user_id int, newAccessToken string, newExpiry int64, newRefreshToken string) error {
 	query := `
-	UPDATE spotify_tokens
+	UPDATE users
 	SET access_token = ?, expires = ?, refresh_token = ?
 	WHERE user_id = ?`
 
