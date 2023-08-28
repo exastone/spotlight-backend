@@ -17,3 +17,5 @@
 .client
 
 storage/
+
+.env
