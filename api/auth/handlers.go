@@ -2,6 +2,7 @@ package auth
 
 import (
 	"backend/database"
+	EH "backend/errorhandling"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -19,7 +20,6 @@ import (
 
 var (
 	spotify_redirect_uri = "http://localhost:8080/auth/callback"
-	access_token         = "" // Global variable to store the access token
 )
 
 /*
@@ -97,9 +97,10 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		sendJSONResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
@@ -107,36 +108,19 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 		fmt.Println(string(bodyData))
 
-		// Note token_type is always "Bearer" according to docs
-		type ResponseData struct {
-			AccessToken  string `json:"access_token"`
-			TokenType    string `json:"token_type"`
-			Scope        string `json:"scope"`
-			ExpiresIn    int    `json:"expires_in"`
-			RefreshToken string `json:"refresh_token"`
-		}
-
 		var responseData ResponseData
 
 		err := json.Unmarshal(bodyData, &responseData)
+		EH.HandleError(err, "Error parsing JSON response")
 
-		if err != nil {
-			log.Printf("Error parsing JSON response: %v", err)
-		}
-
-		// TODO: store in DB with timestamp
-		// note user_id is 0
+		// note user_id=0, user_id=1 used for testing error handling
 		err = database.AddSpotifyToken(
 			database.DB,
 			0, responseData.AccessToken,
 			time.Now().Unix()+int64(responseData.ExpiresIn),
 			responseData.Scope,
 			responseData.RefreshToken)
-		if err != nil {
-			log.Printf("error within CallbackHandler(): %s\n", err)
-		}
-
-		// NOTE: response can either be a redirect or contain data but not both
+		EH.HandleError(err, "error within CallbackHandler()")
 
 		// redirect client back to home page
 		http.Redirect(w, r, "http://localhost:1420/", http.StatusPermanentRedirect)
@@ -154,54 +138,36 @@ func TokenHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s %s", r.Method, r.URL.Path)
 
 	// Parse user_id query parameter
-	user_id, err := strconv.Atoi(r.URL.Query().Get("user_id"))
+	userID, err := strconv.Atoi(r.URL.Query().Get("user_id"))
 	if err != nil {
-		// If no access token for the user, send a custom JSON response
-		response := map[string]string{
+		sendJSONResponse(w, http.StatusBadRequest, map[string]string{
 			"message": "Invalid user_id",
-		}
-		w.Header().Set("Content-Type", "application/json")
-		jsonData, _ := json.Marshal(response)
-		w.Write(jsonData)
+		})
 		return
 	}
 
-	data, err := database.GetSpotifyToken(database.DB, user_id)
+	data, err := database.GetSpotifyToken(database.DB, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			// If no access token for the user, send a custom JSON response
-			response := map[string]string{
+			sendJSONResponse(w, http.StatusNotFound, map[string]string{
 				"message": "No access token available for this user",
-			}
-			w.Header().Set("Content-Type", "application/json")
-			jsonData, _ := json.Marshal(response)
-			w.Write(jsonData)
+			})
 			return
 		}
 
-		// For other errors, return a 500 Internal Server Error
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+
 	fmt.Printf("sqlite: %+v\n", data)
 
 	// if access token is expired -> run refresh token flow
 	if time.Now().Unix() > data.Expires && data.RefreshToken != "" {
 		log.Printf("access token expired, running refresh flow...")
-		http.Redirect(w, r, "/auth/token/refresh"+"?user_id="+strconv.Itoa(user_id), http.StatusSeeOther)
+		http.Redirect(w, r, "/auth/token/refresh"+"?user_id="+strconv.Itoa(userID), http.StatusSeeOther)
 		return
-	} else { // access token is still fresh
-
-		w.Header().Set("Content-Type", "application/json")
-		// Marshal token data into JSON
-		jsonData, err := json.Marshal(data)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Send JSON response
-		w.Write(jsonData)
 	}
+	sendJSONResponse(w, http.StatusOK, data)
 }
 
 /*
@@ -234,18 +200,13 @@ func TokenHandler(w http.ResponseWriter, r *http.Request) {
 func TokenRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s %s", r.Method, r.URL.Path)
 
-	// Parse the query parameters
-	queryParams := r.URL.Query()
-	userIDParam := queryParams.Get("user_id")
-	// Convert the user_id query parameter to an integer
-	user_id, _ := strconv.Atoi(userIDParam)
+	// Parse the query parameter and convert userID to integer
+	userID, _ := strconv.Atoi(r.URL.Query().Get("user_id"))
 
-	DBQuery, err := database.GetSpotifyToken(database.DB, user_id)
-	if err != nil {
-		log.Printf("no token available for user_id: %d", user_id)
-	}
+	DBQuery, err := database.GetSpotifyToken(database.DB, userID)
+	EH.HandleError(err, fmt.Sprintf("no token available for user_id: %d", userID))
 
-	refresh_token := DBQuery.RefreshToken // fetch refresh token from SQLite
+	refresh_token := DBQuery.RefreshToken // fetch refresh token from sqlite
 
 	client := &http.Client{}
 
@@ -268,8 +229,8 @@ func TokenRefreshHandler(w http.ResponseWriter, r *http.Request) {
 		"Authorization": {header_val_auth},
 	}
 
-	resp, _ := client.Do(req)
-
+	resp, err := client.Do(req)
+	EH.HandleError(err)
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
@@ -277,46 +238,54 @@ func TokenRefreshHandler(w http.ResponseWriter, r *http.Request) {
 		bodyData, _ := io.ReadAll(resp.Body)
 		log.Printf("Received JSON data: %s\n", bodyData)
 
-		// Note token_type is always "Bearer" according to docs
-		type ResponseData struct {
-			access_token  string
-			token_type    string
-			scope         string
-			expires_in    int
-			refresh_token string
-		}
-
 		var responseData ResponseData
 
 		err := json.Unmarshal(bodyData, &responseData)
-		if err != nil {
-			log.Printf("Error parsing JSON response: %v", err)
-		}
+		EH.HandleError(err, "Error parsing JSON response")
 
 		// update row with new access token, expiry, and refresh token
 		err = database.UpdateSpotifyToken(database.DB,
-			user_id,
-			responseData.access_token,
-			time.Now().Unix()+int64(responseData.expires_in),
-			responseData.refresh_token)
+			userID,
+			responseData.AccessToken,
+			time.Now().Unix()+int64(responseData.ExpiresIn),
+			responseData.RefreshToken)
 
-		if err != nil {
-			log.Printf("%s\n", err)
-		}
+		EH.HandleError(err)
 
 		// return new access_token to client
-		DBQuery, _ = database.GetSpotifyToken(database.DB, user_id)
+		DBQuery, _ = database.GetSpotifyToken(database.DB, userID)
 		fmt.Printf("%+v\n", DBQuery)
 
 		w.Header().Set("Content-Type", "application/json")
 		// Marshal data into JSON
 		jsonData, err := json.Marshal(DBQuery)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			sendJSONResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 
 		// Send JSON response
 		w.Write(jsonData)
 	}
+}
+
+// Note token_type is always "Bearer" according to docs
+type ResponseData struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	Scope        string `json:"scope"`
+	ExpiresIn    int    `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+// helper function
+func sendJSONResponse(w http.ResponseWriter, statusCode int, responseData interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	jsonData, err := json.Marshal(responseData)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Write(jsonData)
 }
