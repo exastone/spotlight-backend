@@ -113,20 +113,47 @@ func CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		err := json.Unmarshal(bodyData, &responseData)
 		EH.HandleError(err, "Error parsing JSON response")
 
+		/* [!] DESIGN ISSUE
+		TODO: user id is used as url param in other handlers but since this is a redirect from authentication, theres no control over this.
+		*/
+
 		// note user_id=0, user_id=1 used for testing error handling
-		err = database.AddSpotifyToken(
-			database.DB,
-			0, responseData.AccessToken,
-			time.Now().Unix()+int64(responseData.ExpiresIn),
-			responseData.Scope,
-			responseData.RefreshToken)
-		EH.HandleError(err, "error within CallbackHandler()")
+		_USERID := 0
 
-		// redirect client back to home page
-		http.Redirect(w, r, "http://localhost:1420/", http.StatusPermanentRedirect)
+		// check if user with matching user_id is already in database
+		_, doesExists, err := database.GetUserByID(database.DB, _USERID)
+		EH.HandleError(err)
+		if !doesExists {
+			// add user
+			err = database.AddRowUser(
+				database.DB,
+				_USERID,
+				responseData.AccessToken,
+				time.Now().Unix()+int64(responseData.ExpiresIn),
+				responseData.Scope,
+				responseData.RefreshToken)
+			EH.HandleError(err, "error within CallbackHandler()")
 
-		// when the client is redirected back to the home page,
-		// the client will make a request to /auth/token which will have a valid access_token
+			// redirect client back to home page
+			http.Redirect(w, r, "http://localhost:1420/", http.StatusPermanentRedirect)
+
+			// when the client is redirected back to the home page,
+			// the client will make a request to /auth/token which will have a valid access_token
+
+			// if user already exists
+		} else {
+			err = database.UpdateRowUser(
+				database.DB,
+				0,
+				responseData.AccessToken,
+				time.Now().Unix()+int64(responseData.ExpiresIn),
+				responseData.Scope,
+				responseData.RefreshToken)
+			EH.HandleError(err)
+			// redirect client back to home page
+			http.Redirect(w, r, "http://localhost:1420/", http.StatusPermanentRedirect)
+
+		}
 
 	}
 }
@@ -146,7 +173,7 @@ func TokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := database.GetSpotifyToken(database.DB, userID)
+	user, _, err := database.GetUserByID(database.DB, userID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			sendJSONResponse(w, http.StatusNotFound, map[string]string{
@@ -159,15 +186,32 @@ func TokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Printf("sqlite: %+v\n", data)
+	// used for debug
+	// fmt.Printf("sqlite: %+v\n", data)
 
 	// if access token is expired -> run refresh token flow
-	if time.Now().Unix() > data.Expires && data.RefreshToken != "" {
-		log.Printf("access token expired, running refresh flow...")
-		http.Redirect(w, r, "/auth/token/refresh"+"?user_id="+strconv.Itoa(userID), http.StatusSeeOther)
-		return
+	if time.Now().Unix() > user.Expires {
+		// if theres a refresh token available
+		if user.RefreshToken != "" {
+			log.Printf("access token expired, running refresh flow.")
+			http.Redirect(w, r, "/auth/token/refresh"+"?user_id="+strconv.Itoa(userID), http.StatusSeeOther)
+			return
+		} else {
+			// refresh token does not provide refresh token, therefore user must re-authenticate
+			log.Printf("No refresh token, user must re-authenticate.")
+			// set refresh token to empty string which will cause front-end to re-auth with login
+			user.AccessToken = ""
+			err = database.UpdateRowUser(database.DB,
+				userID,
+				user.AccessToken,
+				0,
+				user.Scope,
+				"")
+			EH.HandleError(err)
+		}
+
 	}
-	sendJSONResponse(w, http.StatusOK, data)
+	sendJSONResponse(w, http.StatusOK, user)
 }
 
 /*
@@ -203,7 +247,7 @@ func TokenRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse the query parameter and convert userID to integer
 	userID, _ := strconv.Atoi(r.URL.Query().Get("user_id"))
 
-	DBQuery, err := database.GetSpotifyToken(database.DB, userID)
+	DBQuery, _, err := database.GetUserByID(database.DB, userID)
 	EH.HandleError(err, fmt.Sprintf("no token available for user_id: %d", userID))
 
 	refresh_token := DBQuery.RefreshToken // fetch refresh token from sqlite
@@ -244,16 +288,17 @@ func TokenRefreshHandler(w http.ResponseWriter, r *http.Request) {
 		EH.HandleError(err, "Error parsing JSON response")
 
 		// update row with new access token, expiry, and refresh token
-		err = database.UpdateSpotifyToken(database.DB,
+		err = database.UpdateRowUser(database.DB,
 			userID,
 			responseData.AccessToken,
 			time.Now().Unix()+int64(responseData.ExpiresIn),
+			responseData.Scope,
 			responseData.RefreshToken)
 
 		EH.HandleError(err)
 
 		// return new access_token to client
-		DBQuery, _ = database.GetSpotifyToken(database.DB, userID)
+		DBQuery, _, _ = database.GetUserByID(database.DB, userID)
 		fmt.Printf("%+v\n", DBQuery)
 
 		w.Header().Set("Content-Type", "application/json")

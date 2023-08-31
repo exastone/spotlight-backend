@@ -77,7 +77,7 @@ func createUserTable(db *sql.DB) error {
 	return err
 }
 
-func AddSpotifyToken(db *sql.DB, user_id int, accessToken string, expires int64, scope string, refreshToken string) error {
+func AddRowUser(db *sql.DB, user_id int, accessToken string, expires int64, scope string, refreshToken string) error {
 	query := `
 	INSERT INTO users (user_id, access_token, expires, scope, refresh_token)
 	VALUES (?, ?, ?, ?, ?);`
@@ -86,36 +86,38 @@ func AddSpotifyToken(db *sql.DB, user_id int, accessToken string, expires int64,
 	return err
 }
 
-type SpotifyToken struct {
+// May want to add scope update as well
+func UpdateRowUser(db *sql.DB, user_id int, newAccessToken string, newExpiry int64, scope string, newRefreshToken string) error {
+	query := `
+	UPDATE users
+	SET access_token = ?, expires = ?, scope=?, refresh_token = ?
+	WHERE user_id = ?`
+
+	_, err := db.Exec(query, newAccessToken, newExpiry, scope, newRefreshToken, user_id)
+	return err
+}
+
+func GetUserByID(db *sql.DB, userID int) (*User, bool, error) {
+	query := `
+	SELECT access_token, expires, scope, refresh_token
+	FROM users
+	WHERE user_id = ?`
+
+	var user User
+	err := db.QueryRow(query, userID).Scan(&user.AccessToken, &user.Expires, &user.Scope, &user.RefreshToken)
+	if err == sql.ErrNoRows {
+		return nil, false, nil // No user found
+	} else if err != nil {
+		return nil, false, err // Error occurred
+	}
+	user.UserID = userID
+	return &user, true, nil // User found
+}
+
+type User struct {
 	UserID       int    `json:"user_id"`
 	AccessToken  string `json:"access_token"`
 	Expires      int64  `json:"expires"`
 	Scope        string `json:"scope"`
 	RefreshToken string `json:"refresh_token"`
-}
-
-func GetSpotifyToken(db *sql.DB, user_id int) (SpotifyToken, error) {
-	var token SpotifyToken
-
-	query := `SELECT user_id, access_token, expires, scope, refresh_token
-	          FROM users
-	          WHERE user_id = ?`
-
-	row := db.QueryRow(query, user_id)
-	err := row.Scan(&token.UserID, &token.AccessToken, &token.Expires, &token.Scope, &token.RefreshToken)
-	if err != nil {
-		return SpotifyToken{}, err
-	}
-	return token, nil
-}
-
-// May want to add scope update as well
-func UpdateSpotifyToken(db *sql.DB, user_id int, newAccessToken string, newExpiry int64, newRefreshToken string) error {
-	query := `
-	UPDATE users
-	SET access_token = ?, expires = ?, refresh_token = ?
-	WHERE user_id = ?`
-
-	_, err := db.Exec(query, newAccessToken, newExpiry, newRefreshToken, user_id)
-	return err
 }
