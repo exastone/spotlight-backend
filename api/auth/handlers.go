@@ -55,7 +55,7 @@ var (
 func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s %s", r.Method, r.URL.Path)
 
-	scope := "streaming user-read-email user-read-private"
+	scope := "playlist-read-private streaming playlist-modify-private user-read-playback-state user-modify-playback-state user-read-currently-playing user-read-email user-read-private"
 
 	authQueryParameters := url.Values{}
 	authQueryParameters.Add("response_type", "code")
@@ -280,7 +280,9 @@ func TokenRefreshHandler(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode == http.StatusOK {
 
 		bodyData, _ := io.ReadAll(resp.Body)
-		log.Printf("Received JSON data: %s\n", bodyData)
+
+		// debug
+		// log.Printf("Received JSON data: %s\n", bodyData)
 
 		var responseData ResponseData
 
@@ -299,7 +301,9 @@ func TokenRefreshHandler(w http.ResponseWriter, r *http.Request) {
 
 		// return new access_token to client
 		DBQuery, _, _ = database.GetUserByID(database.DB, userID)
-		fmt.Printf("%+v\n", DBQuery)
+
+		// for debug
+		// log.Printf("%+v\n", DBQuery)
 
 		w.Header().Set("Content-Type", "application/json")
 		// Marshal data into JSON

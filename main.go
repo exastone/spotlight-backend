@@ -66,6 +66,6 @@ func main() {
 		disableCors(
 			http.HandlerFunc(auth.TokenRefreshHandler)))
 
-	log.Printf("Listening at http://localhost:8080")
+	log.Printf("Listening on http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
